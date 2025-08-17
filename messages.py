@@ -1,0 +1,9 @@
+port = 8765
+sender = 'sender'
+text = 'text'
+type = 'type'
+sender_moderator = 'moderator'
+type_register = 'register'
+type_text = 'type_text'
+type_start = 'start'
+type_stop = 'stop'
