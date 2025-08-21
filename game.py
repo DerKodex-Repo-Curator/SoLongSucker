@@ -23,6 +23,11 @@ class GameState:
         self.player_requiring_rescue = None
         self.rescue_responses = {}
         
+        # Track capture state (when player must choose chip to kill)
+        self.capture_in_progress = False
+        self.capture_pile_index = None
+        self.capturing_player = None
+        
     def get_player_total_chips(self, player: str) -> int:
         """Count total chips a player has (including prisoners)"""
         return len(self.player_chips.get(player, []))
@@ -61,7 +66,7 @@ def getInitialPrompt(players, player):
     prompt += 'The available actions with their required strict syntax are:\n'
     prompt += '  PLAY <color> [ON <pile_number>] - Play a chip of given color on a pile (or create new pile)\n'
     prompt += '  CHOOSE <player> - Choose next player to play (when you have choice)\n'
-    prompt += '  KILL <color> - Kill a prisoner chip of given color during capture\n'
+    prompt += '  KILL <color> [FROM <pile_number>] - Kill a prisoner chip or choose chip during capture\n'
     prompt += '  TRANSFER <color> TO <player> - Transfer a prisoner chip to another player\n'
     prompt += '  RESCUE <color> TO <player> - Transfer a prisoner chip during rescue phase\n'
     prompt += '  REFUSE_RESCUE - Refuse to rescue a player during rescue phase\n'
@@ -182,22 +187,16 @@ def handle_capture(pile: List[str], capturing_color: str, base_message: str) -> 
         # Move rebounds to previous player
         return True, message, find_previous_player()
     
-    # Normal capture: capturing player chooses one chip to kill, takes the rest
+    # Normal capture: capturing player must choose one chip to kill, then takes the rest
     message = base_message + f" CAPTURE by {capturing_player}! "
-    message += f"{capturing_player} must choose one chip from the pile to kill, then takes the rest."
+    message += f"{capturing_player} must choose one chip from the pile to kill (use KILL command), then takes the rest."
     
-    # For now, automatically kill the bottom chip and take the rest
-    if pile:
-        captured_count = len(pile) - 1  # All chips except the one being killed
-        killed_chip = pile.pop(0)  # Kill bottom chip
-        
-        # Capturing player takes remaining chips
-        game_state.player_chips[capturing_player].extend(pile)
-        pile.clear()
-        
-        message += f" Killed {killed_chip}, captured {captured_count} chips."
+    # Set a flag indicating we're waiting for chip selection during capture
+    game_state.capture_in_progress = True
+    game_state.capture_pile_index = game_state.piles.index(pile)
+    game_state.capturing_player = capturing_player
     
-    return True, message, capturing_player
+    return True, message, None  # Return None to indicate waiting for KILL command
 
 def determine_next_player(current_player: str, pile: List[str]) -> Optional[str]:
     """Determine who plays next according to the rules"""
@@ -235,6 +234,28 @@ def determine_next_player(current_player: str, pile: List[str]) -> Optional[str]
                 furthest_down_player = player
         
         return furthest_down_player
+
+def determine_next_player_by_pile_rule(pile: List[str]) -> Optional[str]:
+    """
+    Determine which player must play next when all active players are represented in pile
+    Returns the player whose most recent chip is furthest down (lowest index)
+    """
+    # Find the most recent (highest index) chip for each active player
+    most_recent_positions = {}
+    for i, chip_color in enumerate(pile):
+        if chip_color in game_state.active_players:
+            most_recent_positions[chip_color] = i
+    
+    # Among the most recent chips, find the one furthest down (lowest index)
+    furthest_down_player = None
+    furthest_down_position = len(pile)
+    
+    for player, position in most_recent_positions.items():
+        if position < furthest_down_position:
+            furthest_down_position = position
+            furthest_down_player = player
+    
+    return furthest_down_player
 
 def find_previous_player() -> Optional[str]:
     """Find the player who gave the move to current player (for rebound)"""
@@ -396,11 +417,17 @@ def choose_chip_to_kill(player: str, pile_number: int, chip_color: str) -> Tuple
     Choose which chip to kill during capture
     Returns (success, message)
     """
-    is_valid, error_msg = validate_player_action(player, require_current_turn=False)
-    if not is_valid:
-        return False, error_msg
+    # Check if we're in a capture situation
+    if not game_state.capture_in_progress:
+        return False, "No capture in progress. Use KILL command only during captures."
+    
+    if player != game_state.capturing_player:
+        return False, f"Only {game_state.capturing_player} can choose the chip to kill."
     
     pile_index = pile_number - 1  # Convert to 0-based index
+    if pile_index != game_state.capture_pile_index:
+        return False, f"Must choose from the captured pile (pile {game_state.capture_pile_index + 1})."
+    
     if pile_index < 0 or pile_index >= len(game_state.piles):
         return False, f"Pile {pile_number} doesn't exist."
     
@@ -415,6 +442,11 @@ def choose_chip_to_kill(player: str, pile_number: int, chip_color: str) -> Tuple
     game_state.player_chips[player].extend(pile)
     captured_count = len(pile)
     pile.clear()
+    
+    # Clear capture state
+    game_state.capture_in_progress = False
+    game_state.capture_pile_index = None
+    game_state.capturing_player = None
     
     return True, f"{player} killed {chip_color} and captured {captured_count} chips."
 
@@ -432,6 +464,34 @@ def choose_next_player(current_player: str, next_player: str) -> Tuple[bool, str
     
     if next_player in game_state.defeated_players:
         return False, f"{next_player} is defeated and cannot play."
+    
+    # Validate choice against pile constraints (if there are piles and a recent play)
+    if game_state.piles and any(pile for pile in game_state.piles):
+        # Find the most recently played pile (last non-empty pile)
+        recent_pile = None
+        for pile in reversed(game_state.piles):
+            if pile:
+                recent_pile = pile
+                break
+        
+        if recent_pile:
+            colors_in_pile = set(recent_pile)
+            
+            # Check if there are eligible players (not represented in pile)
+            eligible_players = []
+            for player in game_state.active_players:
+                if player not in colors_in_pile:
+                    eligible_players.append(player)
+            
+            if eligible_players:
+                # Current player can choose from eligible players only
+                if next_player not in eligible_players:
+                    return False, f"Cannot choose {next_player} - they are represented in the pile. Choose from: {', '.join(eligible_players)}"
+            else:
+                # All active players represented - must choose player whose most recent chip is furthest down
+                required_player = determine_next_player_by_pile_rule(recent_pile)
+                if required_player and next_player != required_player:
+                    return False, f"All players represented in pile. Must choose {required_player} (furthest down most recent chip)."
     
     # Update current player
     game_state.previous_player = current_player
@@ -530,10 +590,29 @@ def parse_and_execute_action(player: str, action_string: str) -> Tuple[bool, str
         
         elif command == "KILL":
             if len(parts) < 2:
-                return False, "KILL command requires a color. Usage: KILL <color>"
+                return False, "KILL command requires a color. Usage: KILL <color> [FROM <pile_number>]"
             
             color = parts[1].lower()
-            return kill_prisoner(player, color)
+            
+            # Check if this is a capture scenario (KILL FROM pile)
+            if len(parts) >= 4 and parts[2] == "FROM":
+                try:
+                    pile_number = int(parts[3])
+                    success, message = choose_chip_to_kill(player, pile_number, color)
+                    if success:
+                        # After capture, capturing player gets the next turn
+                        update_current_player(player)
+                        
+                        # Check for game end
+                        game_ended, end_msg, winner = check_game_end()
+                        if game_ended:
+                            message += f" {end_msg}"
+                    return success, message
+                except ValueError:
+                    return False, f"Invalid pile number: {parts[3]}"
+            else:
+                # Regular prisoner killing
+                return kill_prisoner(player, color)
         
         elif command == "TRANSFER":
             if len(parts) < 4 or parts[2] != "TO":
