@@ -8,6 +8,9 @@ class GameState:
         self.players = players
         self.current_player = random.choice(players)
         self.previous_player = None  # Track who gave the move to current player
+        # Track who last gave the move to each player, so a chain of rebounds
+        # (Rule 5: cascading defeats) can be walked correctly.
+        self.move_givers = {}
         self.defeated_players = set()
         self.active_players = set(players)
         
@@ -53,7 +56,9 @@ def getRules():
     f.close()
     return rules
 
-def getInitialPrompt(players, player):
+def getInitialPrompt(players, player, start_player=None):
+    if start_player is None:
+        start_player = game_state.current_player if game_state else players[0]
     prompt = 'You are playing the game \'So long sucker\'.\n'
     prompt += 'The players/participants in the game are: ' + ', '.join(players) + '.\n'
     prompt += 'You are player ' + player + '.\n'
@@ -71,7 +76,8 @@ def getInitialPrompt(players, player):
     prompt += '  RESCUE <color> TO <player> - Transfer a prisoner chip during rescue phase\n'
     prompt += '  REFUSE_RESCUE - Refuse to rescue a player during rescue phase\n'
     prompt += '  STATUS - Get current game state\n'
-    prompt += 'The start player is ' + players[random.randomrange(0, len(players))] + '. It is his/her turn now.'
+    prompt += 'The start player is ' + start_player + '. It is his/her turn now.'
+    return prompt
 
 def initialize_game(players: List[str]) -> str:
     """Initialize a new game with given players"""
@@ -142,28 +148,36 @@ def place_chip(player: str, chip_color: str, pile_number: Optional[int] = None) 
     # Check if player has the chip
     if chip_color not in game_state.player_chips[player]:
         return False, f"{player} doesn't have a {chip_color} chip.", None
-    
+
+    # Validate an explicitly requested pile before mutating any state.
+    # No pile_number => create a new pile. An explicit pile_number must exist.
+    if pile_number is not None:
+        pile_index = pile_number - 1
+        if pile_index < 0 or pile_index >= len(game_state.piles):
+            return False, f"Pile {pile_number} doesn't exist.", None
+    else:
+        pile_index = None
+
     # Remove chip from player
     game_state.player_chips[player].remove(chip_color)
-    
-    # Convert 1-based pile_number to 0-based pile_index for internal use
-    pile_index = None if pile_number is None else pile_number - 1
-    
+
     # Place chip
-    if pile_index is None or pile_index < 0 or pile_index >= len(game_state.piles):
+    if pile_index is None:
         # Create new pile
         game_state.piles.append([chip_color])
-        pile_location = f"new pile {len(game_state.piles)}"
+        target_index = len(game_state.piles) - 1
+        pile_location = f"new pile {target_index + 1}"
     else:
         # Add to existing pile
         game_state.piles[pile_index].append(chip_color)
+        target_index = pile_index
         pile_location = f"pile {pile_number}"
-    
+
     message = f"{player} placed {chip_color} chip on {pile_location}."
-    
+
     # Check for capture (two consecutive chips of same color)
-    current_pile = game_state.piles[pile_index if pile_index is not None and pile_index < len(game_state.piles) else -1]
-    
+    current_pile = game_state.piles[target_index]
+
     if len(current_pile) >= 2 and current_pile[-1] == current_pile[-2]:
         # Capture occurs
         return handle_capture(current_pile, chip_color, message)
@@ -317,46 +331,58 @@ def check_defeat_and_rescue(potential_next_player: str) -> Tuple[bool, str, Opti
     Check if a player is defeated and handle rescue phase
     Returns (needs_rescue, message, actual_next_player)
     """
-    if game_state.get_player_total_chips(potential_next_player) > 0:
-        return False, "", potential_next_player
-    
-    # Player has no chips - check for rescue
-    prisoners_available = False
-    rescue_holders = []
-    
-    for player in game_state.active_players:
-        if player != potential_next_player and player not in game_state.defeated_players:
-            prisoners = game_state.get_prisoners(player)
-            if prisoners:
-                prisoners_available = True
-                rescue_holders.append(player)
-    
-    if not prisoners_available:
-        # No rescue possible - player is defeated
-        game_state.defeated_players.add(potential_next_player)
-        game_state.active_players.discard(potential_next_player)
-        
-        # Move rebounds
-        rebound_player = find_previous_player()
-        message = f"{potential_next_player} is defeated! No rescue possible. Move rebounds to {rebound_player}."
-        
-        # Check if rebound player is also defeated (cascade)
-        if rebound_player and game_state.get_player_total_chips(rebound_player) == 0:
-            needs_rescue_cascade, cascade_msg, final_next = check_defeat_and_rescue(rebound_player)
-            message += f" {cascade_msg}"
-            return needs_rescue_cascade, message, final_next
-        
-        return False, message, rebound_player
-    
-    # Rescue phase needed
-    game_state.rescue_phase = True
-    game_state.player_requiring_rescue = potential_next_player
-    game_state.rescue_responses = {}
-    
-    message = f"{potential_next_player} has no chips! Rescue phase: players with prisoners must declare if they will transfer chips to save them."
-    message += f" Players who can rescue: {', '.join(rescue_holders)}"
-    
-    return True, message, None
+    # Walk the rebound chain iteratively (Rule 5): if the player to move has no
+    # chips and cannot be rescued, they are defeated and the move rebounds to
+    # whoever gave them the move; if that player is also chip-less, it rebounds
+    # again, and so on. A visited-guard prevents infinite loops.
+    messages = []
+    visited = set()
+    current = potential_next_player
+
+    while True:
+        if game_state.get_player_total_chips(current) > 0:
+            # Someone able to play was found.
+            combined = " ".join(messages).strip()
+            return False, combined, current
+
+        # current has no chips - check whether any other active player holds
+        # prisoners that could rescue them.
+        rescue_holders = [
+            p for p in game_state.active_players
+            if p != current and p not in game_state.defeated_players
+            and game_state.get_prisoners(p)
+        ]
+
+        if rescue_holders:
+            # Rescue phase needed - defeat is not yet final.
+            game_state.rescue_phase = True
+            game_state.player_requiring_rescue = current
+            game_state.rescue_responses = {}
+
+            msg = (f"{current} has no chips! Rescue phase: players with prisoners "
+                   f"must declare if they will transfer chips to save them. "
+                   f"Players who can rescue: {', '.join(rescue_holders)}")
+            messages.append(msg)
+            combined = " ".join(messages).strip()
+            return True, combined, None
+
+        # No rescue possible - player is defeated, move rebounds.
+        game_state.defeated_players.add(current)
+        game_state.active_players.discard(current)
+        visited.add(current)
+
+        rebound_player = game_state.move_givers.get(current)
+        messages.append(
+            f"{current} is defeated! No rescue possible. Move rebounds to {rebound_player}.")
+
+        if (rebound_player is None
+                or rebound_player in visited
+                or rebound_player in game_state.defeated_players):
+            # Nowhere left to rebound (chain exhausted or game ending).
+            combined = " ".join(messages).strip()
+            return False, combined, rebound_player
+
+        current = rebound_player
 
 def handle_rescue_response(player: str, will_rescue: bool, chip_color: str = None, target: str = None) -> Tuple[bool, str, Optional[str]]:
     """
@@ -406,8 +432,8 @@ def handle_rescue_response(player: str, will_rescue: bool, chip_color: str = Non
         game_state.rescue_phase = False
         game_state.rescue_responses = {}
         game_state.player_requiring_rescue = None
-        
-        rebound_player = find_previous_player()
+
+        rebound_player = game_state.move_givers.get(defeated_player)
         return True, f"All players refused rescue. {defeated_player} is defeated! Move rebounds to {rebound_player}.", rebound_player
     
     return False, f"{player} refuses to rescue. Waiting for other players' responses.", None
@@ -496,7 +522,8 @@ def choose_next_player(current_player: str, next_player: str) -> Tuple[bool, str
     # Update current player
     game_state.previous_player = current_player
     game_state.current_player = next_player
-    
+    game_state.move_givers[next_player] = current_player
+
     # Check if chosen player is defeated (has no chips)
     needs_rescue, rescue_msg, actual_next = check_defeat_and_rescue(next_player)
     if needs_rescue:
@@ -531,13 +558,14 @@ def update_current_player(new_player: str) -> bool:
     
     game_state.previous_player = game_state.current_player
     game_state.current_player = new_player
-    
+    game_state.move_givers[new_player] = game_state.previous_player
+
     # Check for defeat and rescue
     needs_rescue, rescue_msg, actual_next = check_defeat_and_rescue(new_player)
     if actual_next and actual_next != new_player:
         game_state.current_player = actual_next
-    
-    return True
+
+    return True, rescue_msg
 
 def parse_and_execute_action(player: str, action_string: str) -> Tuple[bool, str]:
     """
@@ -554,31 +582,38 @@ def parse_and_execute_action(player: str, action_string: str) -> Tuple[bool, str
         return False, "No action specified."
     
     command = parts[0]
-    
+
+    def invalid_name_error(name):
+        return f"'{name}' is not one of the players: {', '.join(game_state.players)}."
+
     try:
         if command == "PLAY":
             if len(parts) < 2:
                 return False, "PLAY command requires a color. Usage: PLAY <color> [ON <pile_number>]"
-            
+
             color = parts[1].lower()
+            if color not in game_state.players:
+                return False, invalid_name_error(color)
             pile_number = None
-            
+
             # Check for "ON <pile_number>" syntax
             if len(parts) >= 4 and parts[2] == "ON":
                 try:
                     pile_number = int(parts[3])  # Keep as 1-based
                 except ValueError:
                     return False, f"Invalid pile number: {parts[3]}"
-            
+
             success, message, next_player = place_chip(player, color, pile_number)
             if success and next_player:
-                update_current_player(next_player)
-                
+                _, rebound_msg = update_current_player(next_player)
+                if rebound_msg:
+                    message += f" {rebound_msg}"
+
                 # Check for game end
                 game_ended, end_msg, winner = check_game_end()
                 if game_ended:
                     message += f" {end_msg}"
-            
+
             return success, message
         
         elif command == "CHOOSE":
@@ -586,6 +621,8 @@ def parse_and_execute_action(player: str, action_string: str) -> Tuple[bool, str
                 return False, "CHOOSE command requires a player name. Usage: CHOOSE <player>"
             
             next_player = parts[1].lower()
+            if next_player not in game_state.players:
+                return False, invalid_name_error(next_player)
             return choose_next_player(player, next_player)
         
         elif command == "KILL":
@@ -593,7 +630,9 @@ def parse_and_execute_action(player: str, action_string: str) -> Tuple[bool, str
                 return False, "KILL command requires a color. Usage: KILL <color> [FROM <pile_number>]"
             
             color = parts[1].lower()
-            
+            if color not in game_state.players:
+                return False, invalid_name_error(color)
+
             # Check if this is a capture scenario (KILL FROM pile)
             if len(parts) >= 4 and parts[2] == "FROM":
                 try:
@@ -601,8 +640,10 @@ def parse_and_execute_action(player: str, action_string: str) -> Tuple[bool, str
                     success, message = choose_chip_to_kill(player, pile_number, color)
                     if success:
                         # After capture, capturing player gets the next turn
-                        update_current_player(player)
-                        
+                        _, rebound_msg = update_current_player(player)
+                        if rebound_msg:
+                            message += f" {rebound_msg}"
+
                         # Check for game end
                         game_ended, end_msg, winner = check_game_end()
                         if game_ended:
@@ -620,6 +661,10 @@ def parse_and_execute_action(player: str, action_string: str) -> Tuple[bool, str
             
             color = parts[1].lower()
             target_player = parts[3].lower()
+            if color not in game_state.players:
+                return False, invalid_name_error(color)
+            if target_player not in game_state.players:
+                return False, invalid_name_error(target_player)
             return transfer_prisoner(player, color, target_player)
         
         elif command == "RESCUE":
@@ -628,29 +673,37 @@ def parse_and_execute_action(player: str, action_string: str) -> Tuple[bool, str
             
             color = parts[1].lower()
             target_player = parts[3].lower()
+            if color not in game_state.players:
+                return False, invalid_name_error(color)
+            if target_player not in game_state.players:
+                return False, invalid_name_error(target_player)
             success, transfer_msg, next_player = handle_rescue_response(player, True, color, target_player)
-            
+
             if success and next_player:
-                update_current_player(next_player)
-                
+                _, rebound_msg = update_current_player(next_player)
+                if rebound_msg:
+                    transfer_msg += f" {rebound_msg}"
+
                 # Check for game end
                 game_ended, end_msg, winner = check_game_end()
                 if game_ended:
                     transfer_msg += f" {end_msg}"
-            
+
             return success, transfer_msg
         
         elif command == "REFUSE_RESCUE":
             success, message, next_player = handle_rescue_response(player, False)
-            
+
             if success and next_player:
-                update_current_player(next_player)
-                
+                _, rebound_msg = update_current_player(next_player)
+                if rebound_msg:
+                    message += f" {rebound_msg}"
+
                 # Check for game end
                 game_ended, end_msg, winner = check_game_end()
                 if game_ended:
                     message += f" {end_msg}"
-            
+
             return success, message
         
         elif command == "STATUS":

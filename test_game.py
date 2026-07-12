@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import random
 import game
 
 # Global test tracking
@@ -24,8 +25,10 @@ def test_basic_gameplay():
     players = ["alice", "bob", "charlie", "diana"]
     result = game.initialize_game(players)
     assert_test(result.startswith("Game initialized"), "Game initialization")
-    
-    # Use the actual starting player
+
+    # Pin the start player so the scripted action list below is deterministic
+    # (the script chooses bob/diana/charlie/alice and assumes alice starts).
+    game.game_state.current_player = "alice"
     starting_player = game.game_state.current_player
     
     test_actions = [
@@ -227,13 +230,15 @@ def test_comprehensive_game():
     
     players = ["alice", "bob", "charlie", "diana"]
     game.initialize_game(players)
-    
-    # Use actual starting player and their chip color
+
+    # Pin the start player so the scripted actions (which choose alice/bob/diana)
+    # are all legal and the final move triggers a capture by alice.
+    game.game_state.current_player = "charlie"
     current_player = game.game_state.current_player
-    
+
     actions = [
         f"PLAY {current_player}",
-        "CHOOSE alice", 
+        "CHOOSE alice",
         "PLAY alice ON 1",
         "CHOOSE bob",
         "PLAY bob",
@@ -263,11 +268,87 @@ def test_comprehensive_game():
     
     assert_test(all_successful, "Complete game scenario", "All actions in comprehensive test should succeed")
 
+def test_reject_unknown_names():
+    """Engine should reject colors/targets that aren't real players"""
+    print("\n=== Testing Unknown Name Rejection ===")
+
+    players = ["alice", "bob", "charlie", "diana"]
+    game.initialize_game(players)
+    current = game.game_state.current_player
+
+    success, msg = game.parse_and_execute_action(current, "PLAY purple")
+    assert_test(not success, "Reject PLAY with non-player color",
+                "Should fail for unknown color 'purple'")
+
+    success, msg = game.parse_and_execute_action(current, "CHOOSE eve")
+    assert_test(not success, "Reject CHOOSE of non-player",
+                "Should fail for unknown player 'eve'")
+
+    success, msg = game.parse_and_execute_action(current, "TRANSFER bob TO eve")
+    assert_test(not success, "Reject TRANSFER to non-player",
+                "Should fail for unknown target 'eve'")
+
+
+def test_cascading_defeat():
+    """Multiple players defeated in sequence should rebound correctly without recursion errors"""
+    print("\n=== Testing Cascading Defeat ===")
+
+    players = ["alice", "bob", "charlie", "diana"]
+    game.initialize_game(players)
+
+    # alice and bob have no chips; nobody holds prisoners (no rescue possible).
+    # Givers: alice was given the move by bob, bob by charlie. So when alice is
+    # given the move she is defeated (rebound to bob), bob is also chip-less
+    # (rebound to charlie), and charlie can play -- two defeats, one chain walk.
+    game.game_state.player_chips = {
+        "alice": [], "bob": [], "charlie": ["charlie", "charlie"], "diana": ["diana", "diana"],
+    }
+    game.game_state.move_givers = {"alice": "bob", "bob": "charlie"}
+    game.game_state.piles = []
+
+    try:
+        needs_rescue, msg, actual_next = game.check_defeat_and_rescue("alice")
+        no_crash = True
+    except RecursionError:
+        no_crash = False
+        msg, actual_next = "RecursionError", None
+    assert_test(no_crash, "Cascading defeat does not recurse infinitely", msg)
+    assert_test("alice" in game.game_state.defeated_players, "alice defeated in cascade")
+    assert_test("bob" in game.game_state.defeated_players, "bob defeated in cascade")
+    assert_test(actual_next == "charlie",
+                "Move rebounds through chain to charlie",
+                f"Expected charlie, got {actual_next}")
+
+
+def test_full_game_to_winner():
+    """Drive a forced game to a single winner via the engine and check_game_end"""
+    print("\n=== Testing Full Game To Winner ===")
+
+    players = ["alice", "bob", "charlie", "diana"]
+    game.initialize_game(players)
+
+    # Force a near-win: only alice remains active, then confirm the win is detected.
+    game.game_state.defeated_players = {"bob", "charlie", "diana"}
+    game.game_state.active_players = {"alice"}
+    game.game_state.current_player = "alice"
+
+    ended, msg, winner = game.check_game_end()
+    assert_test(ended and winner == "alice", "Single survivor wins",
+                f"Expected alice, got {winner}")
+
+    # A winner with zero chips is still a winner (Rule: Game End).
+    game.game_state.player_chips["alice"] = []
+    ended, msg, winner = game.check_game_end()
+    assert_test(ended and winner == "alice", "Chip-less survivor still wins",
+                f"Expected alice, got {winner}")
+
+
 def run_all_tests():
     """Run all test functions"""
     global test_results
     test_results = []  # Reset results
-    
+    random.seed(0)     # deterministic runs
+
     print("Testing So Long Sucker Game Engine")
     print("=" * 50)
     
@@ -280,6 +361,9 @@ def run_all_tests():
     test_invalid_actions()
     test_pile_constraints()
     test_comprehensive_game()
+    test_reject_unknown_names()
+    test_cascading_defeat()
+    test_full_game_to_winner()
     
     # Print summary
     print("\n" + "=" * 50)
