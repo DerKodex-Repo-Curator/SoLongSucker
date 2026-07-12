@@ -136,6 +136,34 @@ def get_game_state_description() -> str:
     
     return desc
 
+def get_state_snapshot() -> Optional[Dict]:
+    """Structured game state for the web viewer (JSON-serializable)."""
+    if not game_state:
+        return None
+
+    hands = {}
+    for player in game_state.players:
+        prisoners = {}
+        for chip in game_state.get_prisoners(player):
+            prisoners[chip] = prisoners.get(chip, 0) + 1
+        hands[player] = {
+            'own': game_state.get_player_own_chips(player),
+            'prisoners': prisoners,
+        }
+
+    return {
+        'players': game_state.players,
+        'current_player': game_state.current_player,
+        'defeated': sorted(game_state.defeated_players),
+        'hands': hands,
+        'piles': [list(pile) for pile in game_state.piles],
+        'rescue_phase': game_state.rescue_phase,
+        'player_requiring_rescue': game_state.player_requiring_rescue,
+        'capture_in_progress': game_state.capture_in_progress,
+        'capturing_player': game_state.capturing_player,
+        'capture_pile_index': game_state.capture_pile_index,
+    }
+
 def place_chip(player: str, chip_color: str, pile_number: Optional[int] = None) -> Tuple[bool, str, Optional[str]]:
     """
     Place a chip on the table

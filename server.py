@@ -1,7 +1,12 @@
 import sys
 import asyncio
+import webbrowser
+from http import HTTPStatus
+from pathlib import Path
 from websockets import serve
+from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
+from websockets.http11 import Response
 import json
 import traceback
 import logging
@@ -13,6 +18,13 @@ lock = asyncio.Lock()
 nClients = 4
 clients = dict()
 shutdown_event = asyncio.Event()
+
+# Web viewer: browsers connect on /observe as passive observers and receive a
+# structured event stream (game state snapshots + chat). The history buffer
+# lets a viewer that connects (or reloads) mid-game catch up.
+VIEWER_PATH = Path(__file__).with_name('viewer.html')
+observers = set()
+observer_history = []
 
 # Safety cap so a wedged game (e.g. bots that never make a legal move) cannot
 # run forever. The game normally ends when a single player remains.
@@ -53,12 +65,56 @@ async def broadcast(data, exclude_sender=True):
             continue
 
 
+async def notify_observers(event):
+    """Record a viewer event and push it to all connected browser viewers."""
+    observer_history.append(event)
+    payload = json.dumps(event)
+    for websocket in list(observers):
+        try:
+            await websocket.send(payload)
+        except (ConnectionClosedOK, ConnectionClosedError):
+            observers.discard(websocket)
+
+
+async def handle_observer(websocket):
+    """Serve a browser viewer: replay history, then stream new events."""
+    for event in observer_history:
+        await websocket.send(json.dumps(event))
+    observers.add(websocket)
+    try:
+        await websocket.wait_closed()
+    finally:
+        observers.discard(websocket)
+
+
+def process_request(connection, request):
+    """Serve the viewer page over plain HTTP on the websocket port."""
+    if request.headers.get('Upgrade', '').lower() == 'websocket':
+        return None  # normal websocket handshake (players and /observe)
+    if request.path in ('/', '/index.html'):
+        try:
+            body = VIEWER_PATH.read_bytes()
+        except OSError:
+            return connection.respond(HTTPStatus.INTERNAL_SERVER_ERROR,
+                                      'viewer.html not found\n')
+        return Response(200, 'OK', Headers([
+            ('Content-Type', 'text/html; charset=utf-8'),
+            ('Content-Length', str(len(body))),
+        ]), body)
+    return connection.respond(HTTPStatus.NOT_FOUND, 'Not found\n')
+
+
 async def start_game():
     """Initialize the engine and send each player their personalized briefing."""
     players = list(clients.keys())
     logger.info('starting game with players: ' + ', '.join(players))
     game.initialize_game(players)
     start_player = game.game_state.current_player
+    await notify_observers({
+        'event': 'start',
+        'players': players,
+        'state': game.get_state_snapshot(),
+    })
     for participant in players:
         prompt = game.getInitialPrompt(players, participant, start_player)
         await send_to(participant, {
@@ -80,6 +136,11 @@ async def announce_state(result_message):
         messages.current_player: current,
         messages.text: text,
     }, exclude_sender=False)
+    await notify_observers({
+        'event': 'state',
+        'message': result_message,
+        'state': game.get_state_snapshot(),
+    })
 
 
 async def end_game(winner_message):
@@ -91,6 +152,11 @@ async def end_game(winner_message):
         messages.type: messages.type_stop,
         messages.text: winner_message,
     }, exclude_sender=False)
+    await notify_observers({
+        'event': 'stop',
+        'message': winner_message,
+        'state': game.get_state_snapshot(),
+    })
     shutdown_event.set()
 
 
@@ -121,9 +187,23 @@ async def handle_action(sender, text):
             messages.current_player: game.game_state.current_player,
             messages.text: f"Your action '{text.strip()}' was rejected: {message}",
         })
+        await notify_observers({
+            'event': 'action',
+            'sender': sender,
+            'text': text.strip(),
+            'accepted': False,
+            'message': message,
+        })
         return
 
     logger.info(f'{sender} action accepted: {message}')
+    await notify_observers({
+        'event': 'action',
+        'sender': sender,
+        'text': text.strip(),
+        'accepted': True,
+        'message': message,
+    })
     await announce_state(message)
 
     game_ended, end_msg, winner = game.check_game_end()
@@ -132,6 +212,9 @@ async def handle_action(sender, text):
 
 
 async def handler(websocket):
+    if websocket.request is not None and websocket.request.path.startswith('/observe'):
+        await handle_observer(websocket)
+        return
     try:
         while not shutdown_event.is_set():
             message = await websocket.recv()
@@ -162,6 +245,11 @@ async def handler(websocket):
                         await handle_action(sender, text)
                 else:
                     await broadcast(data)
+                    await notify_observers({
+                        'event': 'chat',
+                        'sender': sender,
+                        'text': text,
+                    })
     except (ConnectionClosedOK, ConnectionClosedError):
         logger.warning('connection closed')
     except asyncio.exceptions.CancelledError:
@@ -171,8 +259,12 @@ async def handler(websocket):
 
 
 async def main():
-    server = await serve(handler, "localhost", messages.port)
+    server = await serve(handler, "localhost", messages.port,
+                         process_request=process_request)
+    url = f'http://localhost:{messages.port}/'
     logger.info('started server at port ' + str(messages.port))
+    logger.info('game viewer at ' + url)
+    webbrowser.open(url)
     await shutdown_event.wait()
     server.close()
     await server.wait_closed()

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>So Long Sucker — Live Game</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #16181d;
+    --panel: #1f232b;
+    --panel-border: #333a45;
+    --text: #d7dae0;
+    --muted: #8a919e;
+    --felt: #1e5c3a;
+    --felt-edge: #2d7a50;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    padding: 8px 16px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    border-bottom: 1px solid var(--panel-border);
+    flex: 0 0 auto;
+  }
+  header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
+  #status {
+    font-size: 13px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  #conn { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  #conn.live::before { content: "● "; color: #30a46c; }
+  #conn.dead::before { content: "● "; color: #e5484d; }
+
+  #board {
+    flex: 1;
+    display: grid;
+    grid-template-areas:
+      ".    top    ."
+      "left table  right"
+      ".    bottom .";
+    grid-template-columns: 1fr minmax(280px, 44vmin) 1fr;
+    grid-template-rows: 1fr minmax(280px, 44vmin) 1fr;
+    gap: 10px;
+    padding: 10px;
+    min-height: 0;
+  }
+
+  /* --- the table ----------------------------------------------------- */
+  #table {
+    grid-area: table;
+    background: radial-gradient(circle at 50% 40%, var(--felt-edge), var(--felt) 75%);
+    border: 6px solid #4a3626;
+    border-radius: 18px;
+    box-shadow: inset 0 0 40px rgba(0,0,0,.45);
+    padding: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: center;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 18px;
+    overflow: auto;
+    min-height: 0;
+  }
+  #table .hint {
+    color: rgba(255,255,255,.55);
+    font-size: 14px;
+    text-align: center;
+    width: 100%;
+  }
+  .pile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .pile .stack { position: relative; width: 40px; }
+  .pile .label {
+    font-size: 11px;
+    color: rgba(255,255,255,.7);
+  }
+  .pile.capture .label { color: #ffd166; font-weight: 600; }
+  .chip {
+    position: absolute;
+    left: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 3px solid rgba(255,255,255,.75);
+    box-shadow: 0 2px 3px rgba(0,0,0,.5);
+  }
+
+  /* --- player panels -------------------------------------------------- */
+  .player {
+    background: var(--panel);
+    border: 2px solid var(--panel-border);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    transition: box-shadow .3s, border-color .3s;
+  }
+  .player.current {
+    border-color: var(--accent);
+    box-shadow: 0 0 14px var(--accent);
+  }
+  .player.defeated { opacity: .45; filter: grayscale(.8); }
+  .player .head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--panel-border);
+    flex: 0 0 auto;
+  }
+  .player .swatch {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.7);
+    flex: 0 0 auto;
+  }
+  .player .name { font-weight: 600; font-size: 14px; }
+  .player .badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: auto;
+  }
+  .badge.turn { background: #2f4f2f; color: #8fe3a1; }
+  .badge.out  { background: #4f2f2f; color: #e39a9a; }
+  .badge.rescue { background: #4f452f; color: #ffd166; }
+  .player .chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--panel-border);
+    flex: 0 0 auto;
+    min-height: 30px;
+  }
+  .player .chips .mini {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255,255,255,.6);
+  }
+  .player .chips .sep { color: var(--muted); font-size: 11px; margin: 0 4px; }
+  .player .log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    line-height: 1.4;
+    min-height: 0;
+  }
+  .log .entry { margin-bottom: 8px; word-wrap: break-word; }
+  .log .entry.action {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    background: rgba(255,255,255,.05);
+  }
+  .log .entry.action.ok       { border-left: 3px solid #30a46c; }
+  .log .entry.action.rejected { border-left: 3px solid #e5484d; color: var(--muted); }
+  .log .entry.action .why { display: block; font-family: inherit; color: var(--muted); }
+
+  #seat-top    { grid-area: top; }
+  #seat-right  { grid-area: right; }
+  #seat-bottom { grid-area: bottom; }
+  #seat-left   { grid-area: left; }
+
+  #banner {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.6);
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+  }
+  #banner.show { display: flex; }
+  #banner .card {
+    background: var(--panel);
+    border: 2px solid #ffd166;
+    border-radius: 14px;
+    padding: 28px 44px;
+    font-size: 22px;
+    font-weight: 700;
+    text-align: center;
+    max-width: 70vw;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>So Long Sucker</h1>
+  <div id="status">Waiting for the game to start…</div>
+  <div id="conn" class="dead">connecting</div>
+</header>
+<div id="board">
+  <div id="seat-top"    class="player" hidden></div>
+  <div id="seat-left"   class="player" hidden></div>
+  <div id="table"><div class="hint">Waiting for players…</div></div>
+  <div id="seat-right"  class="player" hidden></div>
+  <div id="seat-bottom" class="player" hidden></div>
+</div>
+<div id="banner"><div class="card" id="banner-text"></div></div>
+
+<script>
+'use strict';
+
+const PALETTE = ['#e5484d', '#3e63dd', '#30a46c', '#f0c000'];
+const SEATS = ['seat-bottom', 'seat-left', 'seat-top', 'seat-right'];
+
+let players = [];             // seating order
+let colorOf = {};             // player name -> css color
+let seatOf = {};              // player name -> seat element id
+let gameOver = false;
+
+const $ = id => document.getElementById(id);
+
+function esc(s) {
+  const div = document.createElement('div');
+  div.textContent = s == null ? '' : String(s);
+  return div.innerHTML;
+}
+
+/* ---- setup ------------------------------------------------------------ */
+
+function setupPlayers(names) {
+  players = names;
+  colorOf = {};
+  seatOf = {};
+  names.forEach((name, i) => {
+    colorOf[name] = PALETTE[i % PALETTE.length];
+    seatOf[name] = SEATS[i % SEATS.length];
+    const seat = $(seatOf[name]);
+    seat.hidden = false;
+    seat.style.setProperty('--accent', colorOf[name]);
+    seat.innerHTML = `
+      <div class="head">
+        <span class="swatch" style="background:${colorOf[name]}"></span>
+        <span class="name">${esc(name)}</span>
+        <span class="badge" hidden></span>
+      </div>
+      <div class="chips"></div>
+      <div class="log"></div>`;
+  });
+}
+
+/* ---- rendering --------------------------------------------------------- */
+
+function chipDot(color, cls) {
+  return `<span class="${cls}" style="background:${colorOf[color] || '#999'}" title="${esc(color)}"></span>`;
+}
+
+function renderState(state) {
+  if (!state) return;
+
+  // table piles
+  const table = $('table');
+  // chips stack upward: chip k (0 = bottom of pile) sits higher and paints
+  // over the one below it, like a stack viewed from the front.
+  const CHIP = 40, STEP = 14;
+  const pilesHtml = state.piles.map((pile, i) => {
+    if (!pile.length) return '';
+    const capture = state.capture_in_progress && state.capture_pile_index === i;
+    const height = CHIP + STEP * (pile.length - 1);
+    const chips = pile.map((c, k) =>
+      `<div class="chip" style="background:${colorOf[c] || '#999'};` +
+      `bottom:${k * STEP}px;z-index:${k}" title="${esc(c)}"></div>`
+    ).join('');
+    return `<div class="pile${capture ? ' capture' : ''}">
+              <div class="stack" style="height:${height}px">${chips}</div>
+              <div class="label">pile ${i + 1}${capture ? ' ⚔' : ''}</div>
+            </div>`;
+  }).join('');
+  table.innerHTML = pilesHtml || '<div class="hint">No piles on the table</div>';
+
+  // players
+  players.forEach(name => {
+    const seat = $(seatOf[name]);
+    const hand = state.hands[name] || { own: 0, prisoners: {} };
+    const defeated = state.defeated.includes(name);
+    const isCurrent = state.current_player === name && !gameOver;
+    const needsRescue = state.rescue_phase && state.player_requiring_rescue === name;
+
+    seat.classList.toggle('current', isCurrent);
+    seat.classList.toggle('defeated', defeated);
+
+    const badge = seat.querySelector('.badge');
+    if (defeated) {
+      badge.hidden = false; badge.className = 'badge out'; badge.textContent = 'DEFEATED';
+    } else if (needsRescue) {
+      badge.hidden = false; badge.className = 'badge rescue'; badge.textContent = 'NEEDS RESCUE';
+    } else if (isCurrent) {
+      badge.hidden = false; badge.className = 'badge turn'; badge.textContent = 'TO MOVE';
+    } else {
+      badge.hidden = true;
+    }
+
+    let chips = '';
+    for (let i = 0; i < hand.own; i++) chips += chipDot(name, 'mini');
+    const prisonerColors = Object.keys(hand.prisoners);
+    if (prisonerColors.length) {
+      chips += '<span class="sep">prisoners:</span>';
+      prisonerColors.forEach(c => {
+        for (let i = 0; i < hand.prisoners[c]; i++) chips += chipDot(c, 'mini');
+      });
+    }
+    if (!chips) chips = '<span class="sep">no chips</span>';
+    seat.querySelector('.chips').innerHTML = chips;
+  });
+}
+
+function addLog(name, html) {
+  const seat = seatOf[name] && $(seatOf[name]);
+  if (!seat) return;
+  const log = seat.querySelector('.log');
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+  log.insertAdjacentHTML('beforeend', html);
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+/* ---- event stream ------------------------------------------------------ */
+
+function handleEvent(ev) {
+  switch (ev.event) {
+    case 'start':
+      setupPlayers(ev.players);
+      renderState(ev.state);
+      $('status').textContent =
+        `Game started — ${ev.state.current_player} moves first.`;
+      break;
+    case 'chat':
+      addLog(ev.sender, `<div class="entry">${esc(ev.text)}</div>`);
+      break;
+    case 'action': {
+      const cls = ev.accepted ? 'ok' : 'rejected';
+      const why = ev.accepted ? '' : `<span class="why">✗ ${esc(ev.message)}</span>`;
+      addLog(ev.sender, `<div class="entry action ${cls}">${esc(ev.text)}${why}</div>`);
+      break;
+    }
+    case 'state':
+      renderState(ev.state);
+      $('status').textContent = ev.message || '';
+      break;
+    case 'stop':
+      gameOver = true;
+      renderState(ev.state);
+      $('status').textContent = ev.message || 'Game over.';
+      $('banner-text').textContent = ev.message || 'Game over.';
+      $('banner').classList.add('show');
+      break;
+  }
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/observe`);
+  ws.onopen = () => {
+    $('conn').className = 'live';
+    $('conn').textContent = 'live';
+  };
+  ws.onmessage = e => handleEvent(JSON.parse(e.data));
+  ws.onclose = () => {
+    $('conn').className = 'dead';
+    $('conn').textContent = gameOver ? 'game ended' : 'disconnected — retrying';
+    if (!gameOver) setTimeout(connect, 2000);
+  };
+}
+connect();
+</script>
+</body>
+</html>
