@@ -33,7 +33,7 @@ DEFAULT_MODELS = {
 
 PROVIDERS = {ANTHROPIC, OPENAI, GROK, GEMINI}
 
-MAX_TOKENS = 5000
+MAX_TOKENS = 16000  # includes adaptive-thinking tokens, not only the visible reply
 MAX_RETRIES = 3
 # Cap off-turn replies between two game actions so agents chatting with each
 # other cannot loop forever. Every accepted action resets the budget, so a
@@ -69,9 +69,10 @@ def make_client():
 def _call_anthropic():
     response = _client.messages.create(
         model=model, max_tokens=MAX_TOKENS, messages=conversation)
-    if not response.content:
-        return ""
-    return response.content[0].text
+    # Sonnet 5 runs adaptive thinking by default, so content may contain
+    # thinking blocks before the text block - extract only text.
+    return "".join(block.text for block in response.content
+                   if block.type == "text")
 
 
 def _call_openai():
