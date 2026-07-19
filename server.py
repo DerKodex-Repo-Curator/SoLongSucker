@@ -121,6 +121,7 @@ async def start_game():
             messages.sender: messages.sender_moderator,
             messages.type: messages.type_start,
             messages.current_player: start_player,
+            messages.to_act: game.get_players_to_act(),
             messages.text: prompt,
         })
 
@@ -129,11 +130,12 @@ async def announce_state(result_message):
     """Broadcast the authoritative state and whose turn it is to everyone."""
     current = game.game_state.current_player
     text = (result_message + "\n\n" + game.get_game_state_description()
-            + f"\nIt is now {current}'s turn.")
+            + "\n" + game.get_turn_phase_description())
     await broadcast({
         messages.sender: messages.sender_moderator,
         messages.type: messages.type_state,
         messages.current_player: current,
+        messages.to_act: game.get_players_to_act(),
         messages.text: text,
     }, exclude_sender=False)
     await notify_observers({
@@ -171,6 +173,7 @@ async def handle_action(sender, text):
             messages.sender: messages.sender_moderator,
             messages.type: messages.type_state,
             messages.current_player: game.game_state.current_player,
+            messages.to_act: game.get_players_to_act(),
             messages.text: message,
         })
         return
@@ -185,6 +188,7 @@ async def handle_action(sender, text):
             messages.sender: messages.sender_moderator,
             messages.type: messages.type_error,
             messages.current_player: game.game_state.current_player,
+            messages.to_act: game.get_players_to_act(),
             messages.text: f"Your action '{text.strip()}' was rejected: {message}",
         })
         await notify_observers({
@@ -240,9 +244,12 @@ async def handler(websocket):
                     break
                 logger.info(sender + ': ' + str(text))
                 # Serialize engine access; free chat is just rebroadcast.
-                if messages.is_action(text):
+                # extract_action tolerates markdown-decorated commands and
+                # commands buried after chat lines.
+                action_line = messages.extract_action(text)
+                if action_line:
                     async with lock:
-                        await handle_action(sender, text)
+                        await handle_action(sender, action_line)
                 else:
                     await broadcast(data)
                     await notify_observers({

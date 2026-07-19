@@ -96,7 +96,8 @@ def test_rescue_mechanics():
     game.game_state.player_chips["bob"] = ["bob", "bob", "alice"]  # Bob has alice prisoner
     game.game_state.player_chips["charlie"] = ["charlie", "diana"]  # Charlie has diana prisoner
     game.game_state.current_player = "bob"
-    
+    game.game_state.awaiting_choose = True  # bob just played and owes a CHOOSE
+
     # Try to choose alice (should trigger rescue)
     success, msg = game.choose_next_player("bob", "alice")
     assert_test(success, "Trigger rescue phase", msg if not success else "")
@@ -121,7 +122,8 @@ def test_defeat_and_rebound():
     game.game_state.player_chips["diana"] = ["diana", "diana"]
     game.game_state.current_player = "bob"
     game.game_state.previous_player = "diana"
-    
+    game.game_state.awaiting_choose = True  # bob just played and owes a CHOOSE
+
     # Choose alice - should result in defeat and rebound to bob
     success, msg = game.choose_next_player("bob", "alice")
     assert_test(success, "Process defeat and rebound", msg if not success else "")
@@ -204,7 +206,8 @@ def test_pile_constraints():
     # Create pile with alice and bob chips
     game.game_state.piles = [["alice", "bob"]]
     game.game_state.current_player = "alice"
-    
+    game.game_state.awaiting_choose = True  # alice just played and owes a CHOOSE
+
     # Alice should be able to choose charlie or diana (not in pile)
     eligible = []
     colors_in_pile = set(game.game_state.piles[0])
@@ -221,6 +224,7 @@ def test_pile_constraints():
     
     # Test choosing ineligible player (should fail)
     game.game_state.current_player = "charlie"  # Reset for next test
+    game.game_state.awaiting_choose = True
     success, msg = game.choose_next_player("charlie", "alice")  # Alice is in pile
     assert_test(not success, "Reject ineligible player choice", "Should fail when choosing player represented in pile")
 

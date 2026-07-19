@@ -25,10 +25,10 @@ GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/opena
 
 # Default model per provider; override with the MODEL environment variable.
 DEFAULT_MODELS = {
-    ANTHROPIC: "claude-3-5-sonnet-20241022",
-    OPENAI: "gpt-4o",
-    GROK: "grok-2-latest",
-    GEMINI: "gemini-2.0-flash",
+    ANTHROPIC: "claude-haiku-4-5", # claude-sonnet-5
+    OPENAI: "gpt-5-mini",
+    GROK: "grok-4.5",
+    GEMINI: "gemini-3.5-flash",
 }
 
 PROVIDERS = {ANTHROPIC, OPENAI, GROK, GEMINI}
@@ -100,12 +100,14 @@ def chat(prompt):
 
 def split_action(response):
     """Split an LLM reply into (chat_part, action_line). action_line is the
-    first line that begins with a known command, or None if there is none."""
+    first line that is a known command (markdown decoration stripped), or
+    None if there is none."""
     chat_lines = []
     action_line = None
     for line in response.splitlines():
-        if action_line is None and messages.is_action(line):
-            action_line = line.strip()
+        candidate = messages.extract_action(line) if action_line is None else None
+        if candidate:
+            action_line = candidate
         else:
             chat_lines.append(line)
     chat_part = "\n".join(chat_lines).strip()
@@ -125,7 +127,7 @@ async def main(participant, initialPrompt):
     _client = make_client()
     uri = "ws://localhost:" + str(messages.port)
 
-    current_player = None
+    players_to_act = []   # who the moderator expects to act now (rescue: several)
     pending = []          # observed messages not yet shown to the LLM
     chat_replies = 0      # off-turn replies since it was last our turn
 
@@ -143,6 +145,7 @@ async def main(participant, initialPrompt):
                 message_type = data.get(messages.type)
                 text = data.get(messages.text)
                 cp = data.get(messages.current_player)
+                to_act = data.get(messages.to_act)
 
                 if sender == participant:
                     continue
@@ -150,25 +153,33 @@ async def main(participant, initialPrompt):
                     logger.info('game over: ' + str(text))
                     break
 
-                if cp is not None:
-                    if cp == participant and current_player != participant:
+                # Moderator messages say who must act now. Fall back to the
+                # current player for messages without an explicit to_act list.
+                if to_act is None and cp is not None:
+                    to_act = [cp]
+                if to_act is not None:
+                    if participant in to_act and participant not in players_to_act:
                         chat_replies = 0  # reset budget when our turn comes round
-                    current_player = cp
+                    players_to_act = to_act
 
                 # Record what we observed so the LLM has full context next call.
                 pending.append(f"{sender}: {text}")
 
-                my_turn = (current_player == participant)
+                my_turn = (participant in players_to_act)
                 from_moderator = (sender == messages.sender_moderator)
 
-                if my_turn:
-                    # Our move. Re-prompt until we get a usable action (or give up).
+                if my_turn and from_moderator:
+                    # The moderator (start/state/error message) says it's our
+                    # move. Acting only on moderator messages means peer chat
+                    # during our turn just buffers instead of squeezing extra
+                    # actions out of the LLM.
+                    # Re-prompt until we get a usable action (or give up).
                     for attempt in range(MAX_ACTION_ATTEMPTS):
                         prompt = "\n".join(pending)
                         pending = []
                         if attempt > 0:
-                            prompt += ("\n(Moderator: it is your turn. Reply with exactly "
-                                       "one valid action command, e.g. PLAY <color>.)")
+                            prompt += ("\n(Moderator: you must act now. Reply with exactly "
+                                       "one valid action command as a plain unformatted line.)")
                         response = chat(prompt)
                         logger.info(response)
                         if response.strip().lower() == 'pass':
