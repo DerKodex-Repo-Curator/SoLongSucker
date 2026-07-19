@@ -34,6 +34,9 @@ class GameState:
         # True while the current player owes a CHOOSE after playing a chip
         # (i.e. the pile left them a free choice of next player).
         self.awaiting_choose = False
+        # Index of the pile the pending CHOOSE must be validated against
+        # (the pile just played on). Only meaningful while awaiting_choose.
+        self.choose_pile_index = None
         
     def get_player_total_chips(self, player: str) -> int:
         """Count total chips a player has (including prisoners)"""
@@ -307,6 +310,7 @@ def place_chip(player: str, chip_color: str, pile_number: Optional[int] = None) 
     if next_player is None:
         # Pile leaves a free choice: same player must now CHOOSE.
         game_state.awaiting_choose = True
+        game_state.choose_pile_index = target_index
     else:
         # Forced by rule 2 - explain why, so nobody infers a nonexistent
         # constraint on where chips may be played.
@@ -635,36 +639,30 @@ def choose_next_player(current_player: str, next_player: str) -> Tuple[bool, str
     if next_player in game_state.defeated_players:
         return False, f"{next_player} is defeated and cannot play."
     
-    # Validate choice against pile constraints (if there are piles and a recent play)
-    if game_state.piles and any(pile for pile in game_state.piles):
-        # Find the most recently played pile (last non-empty pile)
-        recent_pile = None
-        for pile in reversed(game_state.piles):
-            if pile:
-                recent_pile = pile
-                break
-        
-        if recent_pile:
-            colors_in_pile = set(recent_pile)
-            
-            # Check if there are eligible players (not represented in pile)
-            eligible_players = []
-            for player in game_state.active_players:
-                if player not in colors_in_pile:
-                    eligible_players.append(player)
-            
-            if eligible_players:
-                # Current player can choose from eligible players only
-                if next_player not in eligible_players:
-                    return False, f"Cannot choose {next_player} - they are represented in the pile. Choose from: {', '.join(eligible_players)}"
-            else:
-                # All active players represented - must choose player whose most recent chip is furthest down
-                required_player = determine_next_player_by_pile_rule(recent_pile)
-                if required_player and next_player != required_player:
-                    return False, f"All players represented in pile. Must choose {required_player} (furthest down most recent chip)."
-    
+    # Validate choice against the pile that was just played on (rule 2)
+    if game_state.choose_pile_index is not None:
+        played_pile = game_state.piles[game_state.choose_pile_index]
+        colors_in_pile = set(played_pile)
+
+        # Check if there are eligible players (not represented in pile)
+        eligible_players = []
+        for player in game_state.active_players:
+            if player not in colors_in_pile:
+                eligible_players.append(player)
+
+        if eligible_players:
+            # Current player can choose from eligible players only
+            if next_player not in eligible_players:
+                return False, f"Cannot choose {next_player} - they are represented in the pile. Choose from: {', '.join(eligible_players)}"
+        else:
+            # All active players represented - must choose player whose most recent chip is furthest down
+            required_player = determine_next_player_by_pile_rule(played_pile)
+            if required_player and next_player != required_player:
+                return False, f"All players represented in pile. Must choose {required_player} (furthest down most recent chip)."
+
     # Update current player
     game_state.awaiting_choose = False
+    game_state.choose_pile_index = None
     game_state.previous_player = current_player
     game_state.current_player = next_player
     game_state.move_givers[next_player] = current_player
@@ -702,6 +700,7 @@ def update_current_player(new_player: str) -> bool:
         return False
     
     game_state.awaiting_choose = False
+    game_state.choose_pile_index = None
     game_state.previous_player = game_state.current_player
     game_state.current_player = new_player
     game_state.move_givers[new_player] = game_state.previous_player

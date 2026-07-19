@@ -207,6 +207,7 @@ def test_pile_constraints():
     game.game_state.piles = [["alice", "bob"]]
     game.game_state.current_player = "alice"
     game.game_state.awaiting_choose = True  # alice just played and owes a CHOOSE
+    game.game_state.choose_pile_index = 0   # ... on pile 1
 
     # Alice should be able to choose charlie or diana (not in pile)
     eligible = []
@@ -225,8 +226,48 @@ def test_pile_constraints():
     # Test choosing ineligible player (should fail)
     game.game_state.current_player = "charlie"  # Reset for next test
     game.game_state.awaiting_choose = True
+    game.game_state.choose_pile_index = 0
     success, msg = game.choose_next_player("charlie", "alice")  # Alice is in pile
     assert_test(not success, "Reject ineligible player choice", "Should fail when choosing player represented in pile")
+
+def test_choose_validated_against_played_pile():
+    """Regression: CHOOSE must be validated against the pile just played on,
+    not the last non-empty pile (see example-game.txt)"""
+    print("\n=== Testing CHOOSE Uses Played Pile ===")
+
+    players = ["jack", "jim", "josie", "janet"]
+
+    # Scenario 1 (log line 61-64): jack plays on pile 3 while pile 4 exists.
+    # Pile 3 contains jack, janet, jim - so josie is the only legal choice.
+    game.initialize_game(players)
+    game.game_state.piles = [["josie", "janet"], [], ["jack", "janet", "jim"], ["josie"]]
+    game.game_state.current_player = "jack"
+
+    success, msg = game.parse_and_execute_action("jack", "PLAY jack ON 3")
+    assert_test(success, "jack plays on pile 3", msg if not success else "")
+
+    success, msg = game.parse_and_execute_action("jack", "CHOOSE jim")
+    assert_test(not success, "Reject jim (represented in played pile 3)",
+                "jim is in pile 3 and must not be choosable")
+
+    success, msg = game.parse_and_execute_action("jack", "CHOOSE josie")
+    assert_test(success, "Accept josie (only player not in pile 3)", msg if not success else "")
+
+    # Scenario 2 (log line 35-41): josie plays on pile 2 while pile 3 exists.
+    # Pile 2 becomes jim, josie - so jack and janet are the legal choices.
+    game.initialize_game(players)
+    game.game_state.piles = [["josie"], ["jim"], ["jack", "janet", "jim"]]
+    game.game_state.current_player = "josie"
+
+    success, msg = game.parse_and_execute_action("josie", "PLAY josie ON 2")
+    assert_test(success, "josie plays on pile 2", msg if not success else "")
+
+    success, msg = game.parse_and_execute_action("josie", "CHOOSE josie")
+    assert_test(not success, "Reject josie choosing herself (she is in played pile 2)",
+                "josie is in pile 2 and must not be choosable")
+
+    success, msg = game.parse_and_execute_action("josie", "CHOOSE jack")
+    assert_test(success, "Accept jack (not in played pile 2)", msg if not success else "")
 
 def test_comprehensive_game():
     """Run a more comprehensive game scenario"""
@@ -364,6 +405,7 @@ def run_all_tests():
     test_capture_chip_choice()
     test_invalid_actions()
     test_pile_constraints()
+    test_choose_validated_against_played_pile()
     test_comprehensive_game()
     test_reject_unknown_names()
     test_cascading_defeat()
