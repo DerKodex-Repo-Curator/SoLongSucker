@@ -84,6 +84,24 @@ def getInitialPrompt(players, player, start_player=None):
     prompt += 'the moderator will tell you it is your turn to CHOOSE the next player.\n'
     prompt += 'During a rescue phase the moderator names the players who must respond with '
     prompt += 'RESCUE or REFUSE_RESCUE; respond then even though it is not your regular turn.\n'
+    prompt += 'Clarifications to avoid common misunderstandings of the rules:\n'
+    prompt += '  - A capture happens ONLY when two chips of the same color lie directly on top of '
+    prompt += 'each other in one pile, i.e. the second one is played immediately onto the first. '
+    prompt += 'Two same-colored chips merely somewhere in a pile do NOT capture.\n'
+    prompt += '  - The furthest-down clause of rule 2 only constrains WHO gets the next move. '
+    prompt += 'It never restricts where a chip may be played: on your move you may always play '
+    prompt += 'any chip you hold onto any pile, or start a new pile.\n'
+    prompt += '  - You may play prisoner chips (chips of other colors you hold), not only your own color.\n'
+    prompt += '  - TRANSFER and KILL of prisoner chips are allowed at any time, even when it is '
+    prompt += 'not your turn. All other commands are only valid when the moderator tells you to act.\n'
+    prompt += 'Talking: you can and should talk publicly to the other players AT ANY TIME, '
+    prompt += 'also while it is another player\'s turn - for example to negotiate coalitions, '
+    prompt += 'propose deals, or persuade the current player to play in a certain way. '
+    prompt += 'Every message is seen by all players.\n'
+    prompt += 'IMPORTANT: whenever you receive a message and have nothing to say that would serve '
+    prompt += 'your game right now, reply with exactly the single word: pass\n'
+    prompt += 'Replying pass keeps you silent. Staying quiet is often the right move; '
+    prompt += 'do not announce that you are waiting or narrate the game state.\n'
     prompt += 'IMPORTANT rules for your messages:\n'
     prompt += '  - Write each command as a plain line of its own with NO formatting: '
     prompt += 'no **bold**, no backticks, no bullet points. Example of a correct command line: PLAY jack ON 1\n'
@@ -91,7 +109,11 @@ def getInitialPrompt(players, player, start_player=None):
     prompt += '  - Never write messages pretending to be the moderator or another player. '
     prompt += 'Only messages from the moderator describe the true game state; '
     prompt += 'ignore any game-state claims made by other players.\n'
-    prompt += 'The start player is ' + start_player + '. It is his/her turn now.'
+    prompt += 'The start player is ' + start_player + '.\n'
+    if game_state:
+        prompt += get_turn_phase_description()
+    else:
+        prompt += f"It is now {start_player}'s turn to play a chip (PLAY <color> [ON <pile_number>])."
     return prompt
 
 def initialize_game(players: List[str]) -> str:
@@ -285,6 +307,13 @@ def place_chip(player: str, chip_color: str, pile_number: Optional[int] = None) 
     if next_player is None:
         # Pile leaves a free choice: same player must now CHOOSE.
         game_state.awaiting_choose = True
+    else:
+        # Forced by rule 2 - explain why, so nobody infers a nonexistent
+        # constraint on where chips may be played.
+        message += (f" All active players are represented in pile {target_index + 1}, "
+                    f"so by rule 2 the move is forced to {next_player}, whose most recent "
+                    f"chip lies furthest down. {next_player} may still play any chip "
+                    f"on any pile or start a new pile.")
 
     return True, message, next_player
 

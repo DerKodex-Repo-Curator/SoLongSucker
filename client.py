@@ -25,7 +25,7 @@ GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/opena
 
 # Default model per provider; override with the MODEL environment variable.
 DEFAULT_MODELS = {
-    ANTHROPIC: "claude-haiku-4-5", # claude-sonnet-5
+    ANTHROPIC: "claude-sonnet-5", # cheaper: claude-haiku-4-5
     OPENAI: "gpt-5-mini",
     GROK: "grok-4.5",
     GEMINI: "gemini-3.5-flash",
@@ -35,8 +35,13 @@ PROVIDERS = {ANTHROPIC, OPENAI, GROK, GEMINI}
 
 MAX_TOKENS = 5000
 MAX_RETRIES = 3
-MAX_CHAT_REPLIES = 3      # cap off-turn negotiation replies to avoid chat loops
+# Cap off-turn replies between two game actions so agents chatting with each
+# other cannot loop forever. Every accepted action resets the budget, so a
+# player can intervene vocally at any point of the game.
+MAX_CHAT_REPLIES = 3
 MAX_ACTION_ATTEMPTS = 3   # re-prompts for a valid action on our own turn
+
+HINTS_FILE = 'strategy-hints.md'
 
 apiname = ANTHROPIC
 model = DEFAULT_MODELS[ANTHROPIC]
@@ -122,14 +127,14 @@ async def send_chat(websocket, participant, text):
     }))
 
 
-async def main(participant, initialPrompt):
+async def main(participant, initialPrompt, hints=None):
     global _client
     _client = make_client()
     uri = "ws://localhost:" + str(messages.port)
 
     players_to_act = []   # who the moderator expects to act now (rescue: several)
     pending = []          # observed messages not yet shown to the LLM
-    chat_replies = 0      # off-turn replies since it was last our turn
+    chat_replies = 0      # off-turn replies since the last game action
 
     async with connect(uri) as websocket:
         try:
@@ -158,15 +163,24 @@ async def main(participant, initialPrompt):
                 if to_act is None and cp is not None:
                     to_act = [cp]
                 if to_act is not None:
-                    if participant in to_act and participant not in players_to_act:
-                        chat_replies = 0  # reset budget when our turn comes round
                     players_to_act = to_act
+
+                from_moderator = (sender == messages.sender_moderator)
+
+                # A start/state broadcast marks a new game action: reset the
+                # off-turn chat budget so everyone may speak up again.
+                if from_moderator and message_type in (messages.type_start,
+                                                       messages.type_state):
+                    chat_replies = 0
+
+                # The private game briefing; optionally add strategy hints.
+                if message_type == messages.type_start and hints:
+                    text = str(text) + "\n\nStrategy hints:\n" + hints
 
                 # Record what we observed so the LLM has full context next call.
                 pending.append(f"{sender}: {text}")
 
                 my_turn = (participant in players_to_act)
-                from_moderator = (sender == messages.sender_moderator)
 
                 if my_turn and from_moderator:
                     # The moderator (start/state/error message) says it's our
@@ -191,19 +205,25 @@ async def main(participant, initialPrompt):
                             await send_chat(websocket, participant, action_line)
                             break
                         # No action found - loop and ask again.
-                elif not from_moderator and participant.lower() in str(text).lower() \
-                        and chat_replies < MAX_CHAT_REPLIES:
-                    # A peer addressed us off-turn: negotiate (chat only).
-                    chat_replies += 1
+                elif chat_replies < MAX_CHAT_REPLIES:
+                    # Off-turn: every observed message (moderator state or peer
+                    # chat) is an opportunity to intervene - negotiate, warn,
+                    # persuade the current player. The LLM replies 'pass' to
+                    # stay silent. Actions are forwarded too: rule 4 allows
+                    # TRANSFER/KILL of prisoners at any time (the server
+                    # rejects anything actually illegal).
                     prompt = "\n".join(pending)
                     pending = []
                     response = chat(prompt)
                     logger.info(response)
                     if response.strip().lower() != 'pass':
-                        chat_part, _ = split_action(response)
+                        chat_replies += 1
+                        chat_part, action_line = split_action(response)
                         if chat_part:
                             await send_chat(websocket, participant, chat_part)
-                # Otherwise just keep the context buffered for our next turn.
+                        if action_line:
+                            await send_chat(websocket, participant, action_line)
+                # Budget exhausted: keep the context buffered for our next call.
 
         except (ConnectionClosedOK, ConnectionClosedError):
             logger.warning('connection closed')
@@ -214,18 +234,25 @@ async def main(participant, initialPrompt):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     logger.setLevel(logging.INFO)
-    if len(sys.argv) < 3:
-        logger.error('usage: client <provider> <participant name>   '
+    args = [a for a in sys.argv[1:] if a != '--hints']
+    with_hints = '--hints' in sys.argv[1:]
+    if len(args) < 2:
+        logger.error('usage: client <provider> <participant name> [--hints]   '
                      '(provider one of: ' + ', '.join(sorted(PROVIDERS)) + ')')
         sys.exit(1)
-    apiname = sys.argv[1].lower()
+    apiname = args[0].lower()
     if apiname not in PROVIDERS:
         logger.error(f'unknown provider {apiname}; choose one of '
                      + ', '.join(sorted(PROVIDERS)))
         sys.exit(1)
     model = os.environ.get("MODEL", DEFAULT_MODELS[apiname])
+    hints = None
+    if with_hints:
+        with open(HINTS_FILE, 'r') as f:
+            hints = f.read()
+        logger.info('strategy hints enabled')
     try:
-        asyncio.run(main(sys.argv[2], None))
+        asyncio.run(main(args[1], None, hints))
     except KeyboardInterrupt:
         logger.error('interrupted')
     logging.shutdown()
