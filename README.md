@@ -18,6 +18,7 @@ The game rules
 * can be downloaded [here](https://boardgamegeek.com/filepage/17351/solongsuckerpdf) with a boardgamegeek account.
 * A copy is commited in this repository as SoLongSucker.pdf.
 * The text has been extracted to rules.md.
+* This is a very good [instructional video on YouTube](https://youtu.be/dKW1obyyPLM?si=WJgNjiRbdx9QcbGl) which gives a good general introduction to the game and even explains edge cases of the rules.
 
 ## Architecture
 
