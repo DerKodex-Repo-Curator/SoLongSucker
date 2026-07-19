@@ -195,7 +195,10 @@ async def main(participant, initialPrompt, hints=None):
                         if attempt > 0:
                             prompt += ("\n(Moderator: you must act now. Reply with exactly "
                                        "one valid action command as a plain unformatted line.)")
-                        response = chat(prompt)
+                        # Run the blocking LLM call in a thread: a long thinking
+                        # pass must not block the event loop, or websocket
+                        # keepalive pings go unanswered and the connection drops.
+                        response = await asyncio.to_thread(chat, prompt)
                         logger.info(response)
                         if response.strip().lower() == 'pass':
                             break
@@ -215,7 +218,7 @@ async def main(participant, initialPrompt, hints=None):
                     # rejects anything actually illegal).
                     prompt = "\n".join(pending)
                     pending = []
-                    response = chat(prompt)
+                    response = await asyncio.to_thread(chat, prompt)
                     logger.info(response)
                     if response.strip().lower() != 'pass':
                         chat_replies += 1
