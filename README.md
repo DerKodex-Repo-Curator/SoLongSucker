@@ -21,12 +21,31 @@ The game rules
 
 ## Architecture
 
+The `server` and `client` as well as the `viewer` communicate via web sockets. The `game` engine is a separate python file/module but is deployed as part of the server.
+
 ```mermaid
-flowChart LR
+flowchart LR
     game[game engine] --- server
-    server --- client1[client\ne.g. Anthropic]
-    server --- client2[client\ne.g. OpenAI]
+    viewer --- server
+    server --- client1[client]
+    client1 --- anthropic[e.g. Claude API]
+    server --- client2[client]
+    client2 --- openai[e.g. ChatGPT API]
     server --- client3[client]
+    client3 --- xai[e.g. Grok API]
     server --- client4[client]
+    client4 --- google[e.g. Gemini API]
 ```
 
+The server broadcasts every utterance of every client to all other clients, including game actions. The server routes actions to the game engine, which works similar to an MCP server by interpreting certain well formed texts as actions and rejecting others. The server distributes the answers of the game engine to the clients. Every LLM chat bot receives the whole history of the game, including all actions and utterances of all players as the context of every new query.
+
+## Usage
+
+As a prerequisite you need to have set the environment variables for the APIs that you want to use for the clients.
+
+1. Start the server with `python server.py`.
+2. Adapt the start script `startClients.sh` for the clients as you wish.
+3. Execute `startClients.sh`.
+4. Monitor the game in the web interface `localhost:8675` or in the server terminal.
+5. Pause the game whenever necessary with the pause buton in the viewer or  with the space bar in the terminal.
+6. Monitor your API token usage during the game while pausing. 
