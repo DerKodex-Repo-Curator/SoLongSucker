@@ -45,6 +45,29 @@
   #conn { font-size: 12px; color: var(--muted); white-space: nowrap; }
   #conn.live::before { content: "● "; color: #30a46c; }
   #conn.dead::before { content: "● "; color: #e5484d; }
+  #pausebtn {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 12px;
+    padding: 3px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #pausebtn:hover { border-color: var(--muted); }
+  #pausebtn.paused {
+    background: #4f452f;
+    color: #ffd166;
+    border-color: #ffd166;
+  }
+  .log .seq {
+    color: var(--muted);
+    font-size: 10px;
+    margin-right: 5px;
+    user-select: none;
+  }
 
   #board {
     flex: 1;
@@ -214,6 +237,7 @@
 <header>
   <h1>So Long Sucker</h1>
   <div id="status">Waiting for the game to start…</div>
+  <button id="pausebtn" title="Pause/resume the game">⏸ Pause</button>
   <div id="conn" class="dead">connecting</div>
 </header>
 <div id="board">
@@ -332,6 +356,10 @@ function renderState(state) {
   });
 }
 
+function seqTag(ev) {
+  return ev.seq ? `<span class="seq">#${ev.seq}</span>` : '';
+}
+
 function addLog(name, html) {
   const seat = seatOf[name] && $(seatOf[name]);
   if (!seat) return;
@@ -352,18 +380,24 @@ function handleEvent(ev) {
         `Game started — ${ev.state.current_player} moves first.`;
       break;
     case 'chat':
-      addLog(ev.sender, `<div class="entry">${esc(ev.text)}</div>`);
+      addLog(ev.sender, `<div class="entry">${seqTag(ev)}${esc(ev.text)}</div>`);
       break;
     case 'action': {
       const cls = ev.accepted ? 'ok' : 'rejected';
       const why = ev.accepted ? '' : `<span class="why">✗ ${esc(ev.message)}</span>`;
-      addLog(ev.sender, `<div class="entry action ${cls}">${esc(ev.text)}${why}</div>`);
+      addLog(ev.sender, `<div class="entry action ${cls}">${seqTag(ev)}${esc(ev.text)}${why}</div>`);
       break;
     }
     case 'state':
       renderState(ev.state);
       $('status').textContent = ev.message || '';
       break;
+    case 'pause': {
+      const btn = $('pausebtn');
+      btn.classList.toggle('paused', ev.paused);
+      btn.textContent = ev.paused ? '▶ Resume' : '⏸ Pause';
+      break;
+    }
     case 'stop':
       gameOver = true;
       renderState(ev.state);
@@ -374,8 +408,15 @@ function handleEvent(ev) {
   }
 }
 
+let ws = null;
+$('pausebtn').onclick = () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'toggle_pause' }));
+  }
+};
+
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}/observe`);
+  ws = new WebSocket(`ws://${location.host}/observe`);
   ws.onopen = () => {
     $('conn').className = 'live';
     $('conn').textContent = 'live';

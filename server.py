@@ -1,3 +1,4 @@
+import os
 import sys
 import asyncio
 import webbrowser
@@ -32,6 +33,54 @@ max_actions = 1000
 action_count = 0
 game_over = False
 
+# Pause gate: while cleared, incoming player messages (actions and chat) block
+# in their connection handlers and are processed in order on resume. Toggled by
+# the space bar in the server terminal or a control message from the viewer.
+running = asyncio.Event()
+running.set()
+
+
+async def toggle_pause():
+    if running.is_set():
+        running.clear()
+        logger.info('game PAUSED - press space (or use the viewer button) to resume')
+    else:
+        running.set()
+        logger.info('game RESUMED')
+    payload = json.dumps({'event': 'pause', 'paused': not running.is_set()})
+    for websocket in list(observers):
+        try:
+            await websocket.send(payload)
+        except (ConnectionClosedOK, ConnectionClosedError):
+            observers.discard(websocket)
+
+
+def setup_keyboard(loop):
+    """Toggle pause with the space bar when running in a terminal.
+    Returns the saved termios attributes to restore on shutdown, or None."""
+    if not sys.stdin.isatty():
+        return None
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old_attrs = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+
+    def on_key():
+        ch = os.read(fd, 1)
+        if ch == b' ':
+            asyncio.ensure_future(toggle_pause())
+
+    loop.add_reader(fd, on_key)
+    return old_attrs
+
+
+def restore_keyboard(old_attrs):
+    if old_attrs is None:
+        return
+    import termios
+    termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_attrs)
+
 
 async def registerClient(participant, websocket):
     async with lock:
@@ -65,8 +114,17 @@ async def broadcast(data, exclude_sender=True):
             continue
 
 
+event_seq = 0
+
+
 async def notify_observers(event):
-    """Record a viewer event and push it to all connected browser viewers."""
+    """Record a viewer event and push it to all connected browser viewers.
+    Chat and action events get a global sequence number so the order in
+    which the server processed them can be retraced in the viewer."""
+    global event_seq
+    if event.get('event') in ('chat', 'action'):
+        event_seq += 1
+        event['seq'] = event_seq
     observer_history.append(event)
     payload = json.dumps(event)
     for websocket in list(observers):
@@ -77,12 +135,23 @@ async def notify_observers(event):
 
 
 async def handle_observer(websocket):
-    """Serve a browser viewer: replay history, then stream new events."""
+    """Serve a browser viewer: replay history, then stream new events.
+    Viewers may send {'type': 'toggle_pause'} to pause/resume the game."""
     for event in observer_history:
         await websocket.send(json.dumps(event))
+    await websocket.send(json.dumps({'event': 'pause',
+                                     'paused': not running.is_set()}))
     observers.add(websocket)
     try:
-        await websocket.wait_closed()
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+            except ValueError:
+                continue
+            if data.get('type') == 'toggle_pause':
+                await toggle_pause()
+    except (ConnectionClosedOK, ConnectionClosedError):
+        pass
     finally:
         observers.discard(websocket)
 
@@ -236,6 +305,8 @@ async def handler(websocket):
                         await start_game()
 
             elif msg_type == messages.type_text:
+                # Pause gate: hold this message until the game is resumed.
+                await running.wait()
                 if game_over:
                     continue
                 if action_count >= max_actions:
@@ -271,8 +342,14 @@ async def main():
     url = f'http://localhost:{messages.port}/'
     logger.info('started server at port ' + str(messages.port))
     logger.info('game viewer at ' + url)
+    old_attrs = setup_keyboard(asyncio.get_running_loop())
+    if old_attrs is not None:
+        logger.info('press SPACE to pause/resume the game')
     webbrowser.open(url)
-    await shutdown_event.wait()
+    try:
+        await shutdown_event.wait()
+    finally:
+        restore_keyboard(old_attrs)
     server.close()
     await server.wait_closed()
 
