@@ -163,6 +163,23 @@ async def main(participant, initialPrompt, hints=None):
     pending = []          # observed messages not yet shown to the LLM
     chat_replies = 0      # off-turn replies since the last game action
 
+    last_action_line = None   # normalized text of the previous action attempt
+    action_repeat_count = 0   # consecutive repeats of last_action_line
+
+    def note_action_line(line):
+        """Log a warning when the LLM proposes the same action line two or
+        more times in a row, whether or not it actually reached the server -
+        a sign it isn't updating its picture of the game state."""
+        nonlocal last_action_line, action_repeat_count
+        normalized = line.strip().upper()
+        if normalized == last_action_line:
+            action_repeat_count += 1
+            logger.warning(f'{participant} repeated the same action attempt '
+                           f'{action_repeat_count + 1}x in a row: "{line}"')
+        else:
+            last_action_line = normalized
+            action_repeat_count = 0
+
     async with connect(uri) as websocket:
         try:
             await websocket.send(json.dumps({
@@ -233,6 +250,7 @@ async def main(participant, initialPrompt, hints=None):
                         if chat_part:
                             await send_chat(websocket, participant, chat_part)
                         if action_line:
+                            note_action_line(action_line)
                             await send_chat(websocket, participant, action_line)
                             break
                         # No action found - loop and ask again.
@@ -240,9 +258,11 @@ async def main(participant, initialPrompt, hints=None):
                     # Off-turn: every observed message (moderator state or peer
                     # chat) is an opportunity to intervene - negotiate, warn,
                     # persuade the current player. The LLM replies 'pass' to
-                    # stay silent. Actions are forwarded too: rule 4 allows
-                    # TRANSFER/KILL of prisoners at any time (the server
-                    # rejects anything actually illegal).
+                    # stay silent. Actions are forwarded too, but only the ones
+                    # rule 4 actually allows off-turn (messages.OFF_TURN_COMMANDS)
+                    # - the server remains the sole judge of legality otherwise;
+                    # this just avoids wasting a round-trip on requests the LLM
+                    # already knows are out of turn.
                     prompt = "\n".join(pending)
                     pending = []
                     response = await asyncio.to_thread(chat, prompt)
@@ -253,7 +273,19 @@ async def main(participant, initialPrompt, hints=None):
                         if chat_part:
                             await send_chat(websocket, participant, chat_part)
                         if action_line:
-                            await send_chat(websocket, participant, action_line)
+                            note_action_line(action_line)
+                            command = action_line.split()[0].upper()
+                            if command in messages.OFF_TURN_COMMANDS:
+                                await send_chat(websocket, participant, action_line)
+                            else:
+                                # Not our turn: only KILL/TRANSFER/STATUS are
+                                # legal here (see rules). Don't spend a wasted
+                                # round-trip on the server rejecting it - tell
+                                # the LLM locally so it stays in its history.
+                                note = (f"(local notice: '{action_line}' was not sent - "
+                                        f"it is not your turn, only KILL/TRANSFER/STATUS "
+                                        f"are allowed off-turn)")
+                                pending.append(note)
                 # Budget exhausted: keep the context buffered for our next call.
 
         except (ConnectionClosedOK, ConnectionClosedError):
@@ -276,6 +308,12 @@ if __name__ == "__main__":
         logger.error(f'unknown provider {apiname}; choose one of '
                      + ', '.join(sorted(PROVIDERS)))
         sys.exit(1)
+    participant = args[1]
+    game_dir = messages.current_game_log_dir()
+    file_handler = logging.FileHandler(os.path.join(game_dir, f'{participant}.log'))
+    file_handler.setFormatter(logging.Formatter('%(levelname)s:%(name)s:%(message)s'))
+    logging.getLogger().addHandler(file_handler)
+    logger.info('logging this game to ' + game_dir)
     model = os.environ.get("MODEL", DEFAULT_MODELS[apiname])
     hints = None
     if with_hints:
@@ -283,7 +321,7 @@ if __name__ == "__main__":
             hints = f.read()
         logger.info('strategy hints enabled')
     try:
-        asyncio.run(main(args[1], None, hints))
+        asyncio.run(main(participant, None, hints))
     except KeyboardInterrupt:
         logger.error('interrupted')
     logging.shutdown()

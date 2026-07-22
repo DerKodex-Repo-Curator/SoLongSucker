@@ -24,3 +24,8 @@ the other players may or may not be aware of them.
   is a weapon; holding a prisoner of their color lets you decide their fate.
 * Timing of betrayal matters: coalitions are useful while they serve you, but
   only one player wins. Do not be the one who is discarded last without a plan.
+* Finally the most obvious tip but seemingly not that obvious: Don't kill your own chips!
+  In particular, if there is a one-chip pile of your own color and you play on the same
+  pile again, then you have to kill one of your own chips and you do not even get a prisoner.
+* Capturing using your own color is only valuable, if you get your own two chips back,
+  and if you make at least one prisoner of a different color.

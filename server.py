@@ -237,6 +237,7 @@ async def handle_action(sender, text):
 
     # STATUS is a private query: answer only the requester, don't disturb play.
     if text.strip().split()[0].upper() == 'STATUS':
+        logger.info(f'{sender} requested STATUS')
         success, message = game.parse_and_execute_action(sender, text)
         await send_to(sender, {
             messages.sender: messages.sender_moderator,
@@ -356,8 +357,13 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        logging.basicConfig(level=logging.INFO)
+        game_dir = messages.start_new_game_log_dir()
+        logging.basicConfig(level=logging.INFO, handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(os.path.join(game_dir, 'server.log')),
+        ])
         logger.setLevel(logging.INFO)
+        logger.info('logging this game to ' + game_dir)
         nClients = game.nParticipants
         asyncio.run(main())
     except KeyboardInterrupt:
