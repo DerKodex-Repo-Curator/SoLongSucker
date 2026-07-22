@@ -29,6 +29,7 @@ DEFAULT_MODELS = {
     OPENAI: "gpt-5-mini",
     GROK: "grok-4.5",
     GEMINI: "gemini-3.5-flash",
+    # TODO: chinese models kimi, deepseek, qwen, glm
 }
 
 PROVIDERS = {ANTHROPIC, OPENAI, GROK, GEMINI}
@@ -47,6 +48,8 @@ apiname = ANTHROPIC
 model = DEFAULT_MODELS[ANTHROPIC]
 conversation = []         # alternating user/assistant turns for the LLM
 _client = None            # lazily-created SDK client for the chosen provider
+_cached_message_index = None  # index of the conversation message currently
+                               # carrying the cache_control breakpoint
 
 
 def make_client():
@@ -68,7 +71,8 @@ def make_client():
 
 def _call_anthropic():
     response = _client.messages.create(
-        model=model, max_tokens=MAX_TOKENS, messages=conversation)
+        model=model, max_tokens=MAX_TOKENS, messages=conversation,
+        output_config={"effort": "medium"})
     # Sonnet 5 runs adaptive thinking by default, so content may contain
     # thinking blocks before the text block - extract only text.
     return "".join(block.text for block in response.content
@@ -82,11 +86,33 @@ def _call_openai():
         return ""
     return response.choices[0].message.content or ""
 
+def _mark_cache_breakpoint():
+    """Move the prompt-cache breakpoint onto the latest user message. Only
+    Anthropic uses cache_control; only one breakpoint needs to be live since
+    the conversation only ever grows - the cached prefix covers everything
+    before it, so re-tagging older messages would just burn breakpoints
+    (max 4 per request) for no benefit."""
+    global _cached_message_index
+    if apiname != ANTHROPIC:
+        return
+    if _cached_message_index is not None:
+        old = conversation[_cached_message_index]
+        if isinstance(old["content"], list):
+            old["content"][-1].pop("cache_control", None)
+    new_index = len(conversation) - 1
+    conversation[new_index]["content"] = [{
+        "type": "text",
+        "text": conversation[new_index]["content"],
+        "cache_control": {"type": "ephemeral"},
+    }]
+    _cached_message_index = new_index
+
 
 def chat(prompt):
     """Append the prompt, call the LLM with retry/backoff, append and return
     the reply. On persistent failure returns 'pass' so the game can continue."""
     conversation.append({"role": "user", "content": prompt})
+    _mark_cache_breakpoint()
     response = None
     for attempt in range(MAX_RETRIES):
         try:
@@ -200,7 +226,8 @@ async def main(participant, initialPrompt, hints=None):
                         # keepalive pings go unanswered and the connection drops.
                         response = await asyncio.to_thread(chat, prompt)
                         logger.info(response)
-                        if response.strip().lower() == 'pass':
+                        lines = [l.strip().lower() for l in response.strip().splitlines() if l.strip()]
+                        if lines and all(l == 'pass' for l in lines):
                             break
                         chat_part, action_line = split_action(response)
                         if chat_part:
