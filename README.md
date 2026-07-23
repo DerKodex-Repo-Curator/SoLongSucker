@@ -1,6 +1,6 @@
 # So Long Sucker for LLMs
 
-This repository contains a framework that allows four LLMs to play the social game 'So long Sucker' together.
+This repository contains a framework that allows four LLMs to play the social game 'So long Sucker' together. Each client can be backed by any of eight supported providers: Anthropic, OpenAI, xAI, Google, or the Chinese providers Moonshot/Kimi, DeepSeek, Alibaba/Qwen, and Zhipu/GLM.
 
 The game was invented by the famous John Nash and his colleagues, who were game theory researchers.
 
@@ -42,7 +42,7 @@ The server broadcasts every utterance of every client to all other clients, incl
 
 ## Usage
 
-As a prerequisite you need to have set the environment variables for the APIs that you want to use for the clients.
+As a prerequisite you need to have set the environment variables for the APIs that you want to use for the clients: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` (Grok), `GEMINI_API_KEY`, `MOONSHOT_API_KEY` (Kimi), `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY` (Qwen), `ZHIPU_API_KEY` (GLM). Optionally set `MODEL` to override a provider's default model.
 
 1. Start the server with `python server.py`.
 2. Adapt the start script `startClients.sh` for the clients as you wish.

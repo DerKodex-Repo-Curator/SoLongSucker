@@ -12,16 +12,25 @@ import time
 logger = logging.getLogger(__name__)
 
 # --- Provider configuration -------------------------------------------------
-# Anthropic uses its own SDK/messages API. OpenAI, Grok (xAI) and Gemini all
-# speak the OpenAI chat-completions protocol, so the latter two only differ by
-# base_url + api key + model name.
+# Anthropic uses its own SDK/messages API. Every other provider here speaks
+# the OpenAI chat-completions protocol (including all four Chinese providers
+# via their OpenAI-compatible endpoints), so they only differ by base_url +
+# api key + model name.
 ANTHROPIC = 'anthropic'
 OPENAI = 'openai'
 GROK = 'grok'
 GEMINI = 'gemini'
+KIMI = 'kimi'
+DEEPSEEK = 'deepseek'
+QWEN = 'qwen'
+GLM = 'glm'
 
 XAI_BASE_URL = "https://api.x.ai/v1"
 GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+KIMI_BASE_URL = "https://api.moonshot.ai/v1"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+GLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 
 # Default model per provider; override with the MODEL environment variable.
 DEFAULT_MODELS = {
@@ -29,10 +38,13 @@ DEFAULT_MODELS = {
     OPENAI: "gpt-5-mini",
     GROK: "grok-4.5",
     GEMINI: "gemini-3.5-flash",
-    # TODO: chinese models kimi, deepseek, qwen, glm
+    KIMI: "kimi-k2.5",
+    DEEPSEEK: "deepseek-v4-flash",
+    QWEN: "qwen-plus",
+    GLM: "glm-4.6",
 }
 
-PROVIDERS = {ANTHROPIC, OPENAI, GROK, GEMINI}
+PROVIDERS = {ANTHROPIC, OPENAI, GROK, GEMINI, KIMI, DEEPSEEK, QWEN, GLM}
 
 MAX_TOKENS = 16000  # includes adaptive-thinking tokens, not only the visible reply
 MAX_RETRIES = 3
@@ -66,6 +78,14 @@ def make_client():
     if apiname == GEMINI:
         return OpenAI(base_url=GEMINI_OPENAI_BASE_URL,
                       api_key=os.environ.get("GEMINI_API_KEY"))
+    if apiname == KIMI:
+        return OpenAI(base_url=KIMI_BASE_URL, api_key=os.environ.get("MOONSHOT_API_KEY"))
+    if apiname == DEEPSEEK:
+        return OpenAI(base_url=DEEPSEEK_BASE_URL, api_key=os.environ.get("DEEPSEEK_API_KEY"))
+    if apiname == QWEN:
+        return OpenAI(base_url=QWEN_BASE_URL, api_key=os.environ.get("DASHSCOPE_API_KEY"))
+    if apiname == GLM:
+        return OpenAI(base_url=GLM_BASE_URL, api_key=os.environ.get("ZHIPU_API_KEY"))
     raise ValueError(f"Unknown provider: {apiname}")
 
 
@@ -79,12 +99,39 @@ def _call_anthropic():
                    if block.type == "text")
 
 
-def _call_openai():
+def _call_openai_compatible():
+    """Shared chat-completions call for every provider that speaks the
+    OpenAI protocol (OpenAI itself, Grok, Gemini, and the four Chinese
+    providers) - they differ only in the client's base_url/api_key set up
+    in make_client()."""
     response = _client.chat.completions.create(
         model=model, messages=conversation, max_tokens=MAX_TOKENS)
     if not response.choices:
         return ""
     return response.choices[0].message.content or ""
+
+
+# One named entry point per provider, as called out in CALL_FUNCTIONS below -
+# all currently identical since every non-Anthropic provider here is
+# OpenAI-protocol compatible.
+_call_openai = _call_openai_compatible
+_call_grok = _call_openai_compatible
+_call_gemini = _call_openai_compatible
+_call_kimi = _call_openai_compatible
+_call_deepseek = _call_openai_compatible
+_call_qwen = _call_openai_compatible
+_call_glm = _call_openai_compatible
+
+CALL_FUNCTIONS = {
+    ANTHROPIC: _call_anthropic,
+    OPENAI: _call_openai,
+    GROK: _call_grok,
+    GEMINI: _call_gemini,
+    KIMI: _call_kimi,
+    DEEPSEEK: _call_deepseek,
+    QWEN: _call_qwen,
+    GLM: _call_glm,
+}
 
 def _mark_cache_breakpoint():
     """Move the prompt-cache breakpoint onto the latest user message. Only
@@ -116,7 +163,7 @@ def chat(prompt):
     response = None
     for attempt in range(MAX_RETRIES):
         try:
-            response = _call_anthropic() if apiname == ANTHROPIC else _call_openai()
+            response = CALL_FUNCTIONS[apiname]()
             if response and response.strip():
                 break
             logger.warning('empty LLM response, retrying')
